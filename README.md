@@ -30,16 +30,19 @@ It intercepts dangerous commands (like `rm -rf` or `git reset --hard`) and enfor
   - **Gated if destructive:** `git switch -f`, `git switch --discard-changes`
   - **Gated stash ops:** `git stash drop`, `git stash clear`, `git stash pop`
 
+- **Package manager force-audit gating**
+  - Gates `npm`, `yarn`, `pnpm`, and `bun` when command shape matches `audit fix --force`
+    (including `audit --fix --force` forms)
+
 - **Sudo protection (soft mode)**
   - Installs `/etc/sudoers.d/safeexec` to prepend SafeExec into `secure_path`,
     ensuring `sudo rm -rf ...` and `sudo git ...` resolve through SafeExec when PATH-based.
 
-- **macOS Homebrew git coverage**
-  - On Apple Silicon, `git` typically resolves from `/opt/homebrew/bin/git`.
-  - SafeExec installs a **Homebrew git shim** at `/opt/homebrew/bin/git`, backing up the original to:
-    - `/opt/homebrew/bin/git.safeexec.real`
-  - On Intel macOS, if `/usr/local/bin/git` is a Homebrew Cellar symlink, SafeExec will back it up to:
-    - `/usr/local/bin/git.safeexec.real`
+- **macOS Homebrew coverage**
+  - On Apple Silicon, `git`, `npm`, `yarn`, `pnpm`, and `bun` often resolve from `/opt/homebrew/bin`.
+  - SafeExec installs **Homebrew shims** there and backs up originals to `.safeexec.real`.
+  - On Intel macOS, if `/usr/local/bin/<cmd>` is a Homebrew Cellar symlink, SafeExec backs it up to:
+    - `/usr/local/bin/<cmd>.safeexec.real`
 
 - **Ubuntu/Debian/WSL hard mode (recommended for Codex/agents)**
   - Non-interactive harnesses can bypass PATH via:
@@ -113,6 +116,16 @@ git reset --hard HEAD~1
 Type "confirm" to execute:
 ```
 
+### Example: `npm audit fix --force`
+
+```bash
+npm audit fix --force
+
+[SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:
+  npm audit fix --force
+Type "confirm" to execute:
+```
+
 To proceed, type `confirm` + Enter. Any other input (or `Ctrl+C`) cancels with exit code `130`.
 
 If SafeExec cannot access a usable terminal input, it blocks with exit code `126`.
@@ -153,21 +166,37 @@ SAFEEXEC_DISABLED=1 git reset --hard
 1. Installs wrappers at:
    - `/usr/local/safeexec/bin/rm`
    - `/usr/local/safeexec/bin/git`
+   - `/usr/local/safeexec/bin/npm`
+   - `/usr/local/safeexec/bin/yarn`
+   - `/usr/local/safeexec/bin/pnpm`
+   - `/usr/local/safeexec/bin/bun`
 2. Installs shims (symlinks) at:
    - `/usr/local/bin/rm` → `/usr/local/safeexec/bin/rm`
    - `/usr/local/bin/git` → `/usr/local/safeexec/bin/git`
+   - `/usr/local/bin/npm` → `/usr/local/safeexec/bin/npm`
+   - `/usr/local/bin/yarn` → `/usr/local/safeexec/bin/yarn`
+   - `/usr/local/bin/pnpm` → `/usr/local/safeexec/bin/pnpm`
+   - `/usr/local/bin/bun` → `/usr/local/safeexec/bin/bun`
 3. Installs CLI:
    - `/usr/local/bin/safeexec`
 4. Installs sudo `secure_path` rule:
    - `/etc/sudoers.d/safeexec`
 
-### macOS Homebrew git shim
+### macOS Homebrew shims
 
 Because Homebrew’s PATH often wins, SafeExec also installs:
 
 - `/opt/homebrew/bin/git` shim → calls SafeExec wrapper
-- Backup stored as:
+- `/opt/homebrew/bin/npm` shim → calls SafeExec wrapper
+- `/opt/homebrew/bin/yarn` shim → calls SafeExec wrapper
+- `/opt/homebrew/bin/pnpm` shim → calls SafeExec wrapper
+- `/opt/homebrew/bin/bun` shim → calls SafeExec wrapper
+- Backups stored as:
   - `/opt/homebrew/bin/git.safeexec.real`
+  - `/opt/homebrew/bin/npm.safeexec.real`
+  - `/opt/homebrew/bin/yarn.safeexec.real`
+  - `/opt/homebrew/bin/pnpm.safeexec.real`
+  - `/opt/homebrew/bin/bun.safeexec.real`
 
 ### Ubuntu/Debian/WSL hard mode (`dpkg-divert`)
 
@@ -196,10 +225,22 @@ Result: even `command -p rm`, absolute paths, and minimal environment shells are
 SAFEEXEC_DIR=/usr/local/safeexec/bin
 /usr/local/bin/rm shim: [OK]
 /usr/local/bin/git shim: [OK]
+/usr/local/bin/npm shim: [OK]
+/usr/local/bin/yarn shim: [OK]
+/usr/local/bin/pnpm shim: [OK]
+/usr/local/bin/bun shim: [OK]
 which rm:  /usr/local/bin/rm
 which git: /opt/homebrew/bin/git
+which npm: /opt/homebrew/bin/npm
+which yarn: /opt/homebrew/bin/yarn
+which pnpm: /opt/homebrew/bin/pnpm
+which bun: /opt/homebrew/bin/bun
 effective gate rm:  [YES]
 effective gate git: [YES] (homebrew shim)
+effective gate npm: [YES] (homebrew shim)
+effective gate yarn: [YES] (homebrew shim)
+effective gate pnpm: [YES] (homebrew shim)
+effective gate bun: [YES] (homebrew shim)
 safeexec: ON
 ```
 
@@ -225,6 +266,7 @@ git hard-mode:   [YES] (/usr/bin/git)
 
 ```bash
 /opt/homebrew/bin/git.safeexec.real reset --hard
+/opt/homebrew/bin/npm.safeexec.real audit fix --force
 ```
 
 ### Ubuntu/Debian/WSL hard mode bypass

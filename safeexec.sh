@@ -5,10 +5,11 @@ set -euo pipefail
 # SAFEEXEC: Destructive Command Interceptor (Ubuntu/Debian/WSL + macOS)
 #
 # This installer:
-#   - Installs wrappers in: /usr/local/safeexec/bin/{rm,git}
-#   - Installs shims in:    /usr/local/bin/{rm,git}  -> wrappers
+#   - Installs wrappers in: /usr/local/safeexec/bin/{rm,git,npm,yarn,pnpm,bun}
+#   - Installs shims in:    /usr/local/bin/{rm,git,npm,yarn,pnpm,bun}  -> wrappers
 #   - Installs CLI toggle:  /usr/local/bin/safeexec
 #   - macOS Apple Silicon: installs Homebrew git shim at /opt/homebrew/bin/git
+#                          and Homebrew package-manager shims at /opt/homebrew/bin/{npm,yarn,pnpm,bun}
 #   - macOS Intel Homebrew: if /usr/local/bin/git is a Homebrew Cellar symlink, backs it up
 #                           to /usr/local/bin/git.safeexec.real and installs our shim.
 #   - Ubuntu/Debian/WSL: optional hard mode via dpkg-divert to catch absolute paths and command -p.
@@ -29,6 +30,8 @@ HOMEBREW_GIT_REAL="$HOMEBREW_BIN/git.safeexec.real"
 
 MARK_HARD="SAFEEXEC HARD WRAPPER"
 MARK_BREW="SAFEEXEC HOMEBREW GIT SHIM"
+MARK_BREW_PM_PREFIX="SAFEEXEC HOMEBREW PM SHIM"
+GATED_PM_CMDS=(npm yarn pnpm bun)
 
 die() { echo "safeexec: $*" >&2; exit 1; }
 need_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Run as root (sudo)"; }
@@ -69,8 +72,8 @@ file_has_marker() {
   grep -q "$marker" "$f" 2>/dev/null
 }
 
-# Detect common Homebrew git symlink targets (Cellar paths)
-is_homebrew_git_symlink() {
+# Detect common Homebrew symlink targets (Cellar paths)
+is_homebrew_cellar_symlink() {
   local link="$1"
   [[ -L "$link" ]] || return 1
 
@@ -83,7 +86,7 @@ is_homebrew_git_symlink() {
   fi
 
   case " $val $resolved " in
-    *"Cellar/git/"*|*"Homebrew/Cellar/git/"*|*"homebrew/Cellar/git/"*) return 0 ;;
+    *"Cellar/"*|*"Homebrew/Cellar/"*|*"homebrew/Cellar/"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -412,6 +415,189 @@ EOF
   chmod 0755 "$dst"
 }
 
+write_wrapper_pkgmgr() {
+  local pm="$1"
+  ensure_dir_0755 "$SAFEEXEC_DIR"
+  local dst="$SAFEEXEC_DIR/$pm"
+
+  cat >"$dst" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+PM="$pm"
+STATE_FILE_USER="\${XDG_CONFIG_HOME:-\$HOME/.config}/safeexec/disabled"
+STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
+
+is_disabled() {
+  [[ "\${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
+  [[ -f "\$STATE_FILE_GLOBAL" ]] && return 0
+  if [[ -n "\${SUDO_USER:-}" ]]; then
+    local h=""
+    h="\$(eval "echo ~\$SUDO_USER" 2>/dev/null || true)"
+    [[ -n "\$h" && -f "\$h/.config/safeexec/disabled" ]] && return 0
+  fi
+  [[ -f "\$STATE_FILE_USER" ]] && return 0
+  return 1
+}
+
+log_audit() {
+  command -v logger >/dev/null 2>&1 && logger -t safeexec "\$*" || true
+}
+
+SAFEEXEC_TTY_FDS_OPENED=0
+TTY_IN="/dev/tty"
+TTY_OUT="/dev/tty"
+
+pick_tty_pair() {
+  SAFEEXEC_TTY_FDS_OPENED=0
+  TTY_IN="/dev/tty"
+  TTY_OUT="/dev/tty"
+
+  if exec 9</dev/tty 2>/dev/null && exec 10>/dev/tty 2>/dev/null; then
+    SAFEEXEC_TTY_FDS_OPENED=1
+    if [[ -e /dev/fd/9 ]]; then
+      TTY_IN="/dev/fd/9"
+      TTY_OUT="/dev/fd/10"
+    else
+      TTY_IN="/proc/self/fd/9"
+      TTY_OUT="/proc/self/fd/10"
+    fi
+    return 0
+  fi
+
+  if [[ -t 0 ]]; then
+    TTY_IN="/dev/fd/0"
+    if [[ -t 2 ]]; then
+      TTY_OUT="/dev/fd/2"
+    elif [[ -t 1 ]]; then
+      TTY_OUT="/dev/fd/1"
+    else
+      TTY_OUT="/dev/fd/2"
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
+close_tty_pair() {
+  if [[ "\$SAFEEXEC_TTY_FDS_OPENED" -eq 1 ]]; then
+    exec 9<&- 2>/dev/null || true
+    exec 10>&- 2>/dev/null || true
+    SAFEEXEC_TTY_FDS_OPENED=0
+  fi
+}
+
+confirm_or_die() {
+  local cmd="\$1"
+  log_audit "BLOCKED: \$PM \$cmd"
+
+  if ! pick_tty_pair; then
+    echo "safeexec: BLOCKED (no usable TTY; cannot prompt): \$PM \$cmd" >&2
+    exit 126
+  fi
+
+  local reply=""
+  printf '\\n\\033[0;36m[SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:\\033[0m\\n  %s %s\\n' "\$PM" "\$cmd" >"\$TTY_OUT"
+  printf 'Type "confirm" to execute: ' >"\$TTY_OUT"
+
+  if ! IFS= read -r reply <"\$TTY_IN"; then
+    close_tty_pair
+    echo "safeexec: BLOCKED (cannot read TTY; cannot prompt): \$PM \$cmd" >&2
+    exit 126
+  fi
+  printf '\\n' >"\$TTY_OUT"
+  close_tty_pair
+
+  if [[ "\$reply" != "confirm" ]]; then
+    echo "safeexec: cancelled" >&2
+    exit 130
+  fi
+
+  log_audit "CONFIRMED: \$PM \$cmd"
+}
+
+REAL_PM=""
+for cand in \
+  "/usr/bin/\${PM}.safeexec.real" \
+  "/bin/\${PM}.safeexec.real" \
+  "/opt/homebrew/bin/\${PM}.safeexec.real" \
+  "/usr/local/bin/\${PM}.safeexec.real" \
+  "/opt/homebrew/bin/\$PM" \
+  "/usr/local/bin/\$PM" \
+  "/usr/bin/\$PM" \
+  "/bin/\$PM" \
+; do
+  if [[ -x "\$cand" ]] && ! [[ "\$cand" -ef "\$0" ]]; then
+    REAL_PM="\$cand"
+    break
+  fi
+done
+if [[ -z "\$REAL_PM" ]]; then
+  REAL_PM="\$(command -p -v "\$PM" 2>/dev/null || true)"
+fi
+if [[ -z "\$REAL_PM" ]]; then
+  echo "safeexec: \$PM: command not found" >&2
+  exit 127
+fi
+
+if is_disabled; then
+  exec "\$REAL_PM" "\$@"
+fi
+
+args=("\$@")
+
+has_sequence() {
+  local seq=("\$@")
+  local i=0
+  local a=""
+  for a in "\${args[@]}"; do
+    if [[ "\$a" == "\${seq[\$i]}" ]]; then
+      ((i += 1))
+      if (( i == \${#seq[@]} )); then
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+has_force=0
+for a in "\${args[@]}"; do
+  case "\$a" in
+    --force|-f)
+      has_force=1
+      break
+      ;;
+  esac
+done
+
+should_gate=0
+if [[ "\$has_force" -eq 1 ]]; then
+  case "\$PM" in
+    npm|pnpm|bun)
+      if has_sequence audit fix || has_sequence audit --fix; then
+        should_gate=1
+      fi
+      ;;
+    yarn)
+      if has_sequence audit fix || has_sequence audit --fix || has_sequence npm audit fix || has_sequence npm audit --fix; then
+        should_gate=1
+      fi
+      ;;
+  esac
+fi
+
+if [[ "\$should_gate" -eq 1 ]]; then
+  confirm_or_die "\$(printf '%q ' "\${args[@]}")"
+fi
+
+exec "\$REAL_PM" "\${args[@]}"
+EOF
+
+  chmod 0755 "$dst"
+}
+
 # =============================================================================
 # CLI TOGGLE (safeexec)
 # =============================================================================
@@ -499,7 +685,7 @@ remove_safeexec_cli() {
 
 install_localbin_shims() {
   ensure_dir_0755 "$LOCALBIN"
-  for c in rm git; do
+  for c in rm git "${GATED_PM_CMDS[@]}"; do
     local target="$LOCALBIN/$c"
     local src="$SAFEEXEC_DIR/$c"
     local backup="${target}.safeexec.real"
@@ -513,15 +699,15 @@ install_localbin_shims() {
       continue
     fi
 
-    # Special-case: Homebrew git symlink in /usr/local/bin on Intel macOS
-    if [[ "$c" == "git" ]] && is_darwin && [[ -L "$target" ]] && ! symlink_points_to "$target" "$src" && is_homebrew_git_symlink "$target"; then
+    # Special-case: Homebrew Cellar symlink in /usr/local/bin on Intel macOS
+    if is_darwin && [[ -L "$target" ]] && ! symlink_points_to "$target" "$src" && is_homebrew_cellar_symlink "$target"; then
       if [[ -e "$backup" ]]; then
         echo "safeexec: WARNING: $backup already exists; not modifying $target."
         continue
       fi
       mv "$target" "$backup"
       ln -s "$src" "$target"
-      echo "safeexec: installed Intel Homebrew git shim at $target (backup: $backup)"
+      echo "safeexec: installed Intel Homebrew $c shim at $target (backup: $backup)"
       continue
     fi
 
@@ -536,7 +722,7 @@ install_localbin_shims() {
 }
 
 remove_localbin_shims() {
-  for c in rm git; do
+  for c in rm git "${GATED_PM_CMDS[@]}"; do
     local target="$LOCALBIN/$c"
     local src="$SAFEEXEC_DIR/$c"
     local backup="${target}.safeexec.real"
@@ -545,8 +731,8 @@ remove_localbin_shims() {
       rm -f "$target"
     fi
 
-    # Restore Intel Homebrew git backup if present and target missing
-    if [[ "$c" == "git" ]] && [[ -e "$backup" ]]; then
+    # Restore Intel Homebrew backup if present and target missing
+    if [[ -e "$backup" ]]; then
       if [[ ! -e "$target" ]]; then
         mv "$backup" "$target"
         echo "safeexec: restored $target from $backup"
@@ -615,6 +801,84 @@ remove_homebrew_git_shim() {
   else
     echo "safeexec: WARNING: $HOMEBREW_GIT_REAL exists but $HOMEBREW_GIT is not safeexec shim; not restoring."
   fi
+}
+
+install_homebrew_pm_shims() {
+  is_darwin || return 0
+  ensure_dir_0755 "$HOMEBREW_BIN"
+
+  local c=""
+  local shim=""
+  local real=""
+  local marker=""
+  local uid=""
+  local gid=""
+
+  for c in "${GATED_PM_CMDS[@]}"; do
+    shim="$HOMEBREW_BIN/$c"
+    real="$HOMEBREW_BIN/$c.safeexec.real"
+    marker="$MARK_BREW_PM_PREFIX ($c)"
+
+    [[ -e "$shim" ]] || continue
+
+    if [[ -e "$real" ]] && file_has_marker "$shim" "$marker"; then
+      continue
+    fi
+    if [[ -e "$real" ]]; then
+      echo "safeexec: WARNING: $real exists but $shim is not our shim; leaving it alone."
+      continue
+    fi
+
+    uid=""
+    gid=""
+    if command -v stat >/dev/null 2>&1; then
+      uid="$(stat -f '%u' "$shim" 2>/dev/null || true)"
+      gid="$(stat -f '%g' "$shim" 2>/dev/null || true)"
+    fi
+
+    if ! mv "$shim" "$real"; then
+      echo "safeexec: WARNING: failed to move $shim; Homebrew $c shim NOT installed."
+      continue
+    fi
+
+    cat >"$shim" <<EOF
+#!/usr/bin/env bash
+# $marker
+exec "$SAFEEXEC_DIR/$c" "\$@"
+EOF
+    chmod 0755 "$shim"
+
+    if [[ -n "$uid" && -n "$gid" ]]; then
+      chown "$uid:$gid" "$shim" 2>/dev/null || true
+      chown "$uid:$gid" "$real" 2>/dev/null || true
+    fi
+
+    echo "safeexec: installed Homebrew $c shim at $shim (backup: $real)"
+  done
+}
+
+remove_homebrew_pm_shims() {
+  is_darwin || return 0
+
+  local c=""
+  local shim=""
+  local real=""
+  local marker=""
+  for c in "${GATED_PM_CMDS[@]}"; do
+    shim="$HOMEBREW_BIN/$c"
+    real="$HOMEBREW_BIN/$c.safeexec.real"
+    marker="$MARK_BREW_PM_PREFIX ($c)"
+
+    [[ -e "$real" ]] || continue
+
+    if file_has_marker "$shim" "$marker"; then
+      rm -f "$shim"
+      mv "$real" "$shim"
+      echo "safeexec: restored Homebrew $c ($shim)"
+    else
+      echo "safeexec: WARNING: $real exists but $shim is not safeexec shim; not restoring."
+    fi
+  done
 }
 
 # =============================================================================
@@ -739,6 +1003,10 @@ cmd_install_hard() {
 
   write_wrapper_rm
   write_wrapper_git
+  local pm=""
+  for pm in "${GATED_PM_CMDS[@]}"; do
+    write_wrapper_pkgmgr "$pm"
+  done
   install_safeexec_cli
   install_sudo_secure_path
   install_localbin_shims
@@ -766,13 +1034,18 @@ cmd_install() {
 
   write_wrapper_rm
   write_wrapper_git
+  local pm=""
+  for pm in "${GATED_PM_CMDS[@]}"; do
+    write_wrapper_pkgmgr "$pm"
+  done
   install_safeexec_cli
   install_sudo_secure_path
   install_localbin_shims
   install_homebrew_git_shim
+  install_homebrew_pm_shims
 
   echo "safeexec: installed wrappers in $SAFEEXEC_DIR"
-  echo "safeexec: shims in $LOCALBIN (rm/git)"
+  echo "safeexec: shims in $LOCALBIN (rm/git/npm/yarn/pnpm/bun)"
   if is_darwin && [[ -e "$HOMEBREW_GIT_REAL" ]] && file_has_marker "$HOMEBREW_GIT" "$MARK_BREW"; then
     echo "safeexec: Homebrew git shim active at $HOMEBREW_GIT"
   fi
@@ -786,12 +1059,18 @@ cmd_install() {
 
 cmd_uninstall() {
   need_root
+  remove_homebrew_pm_shims
   remove_homebrew_git_shim
   remove_localbin_shims
   remove_safeexec_cli
   remove_sudo_secure_path
 
-  rm -f "$SAFEEXEC_DIR/rm" "$SAFEEXEC_DIR/git" 2>/dev/null || true
+  local pm=""
+  local rm_targets=("$SAFEEXEC_DIR/rm" "$SAFEEXEC_DIR/git")
+  for pm in "${GATED_PM_CMDS[@]}"; do
+    rm_targets+=("$SAFEEXEC_DIR/$pm")
+  done
+  rm -f "${rm_targets[@]}" 2>/dev/null || true
   rmdir "$SAFEEXEC_DIR" 2>/dev/null || true
   rmdir "$SAFEEXEC_ROOT" 2>/dev/null || true
 
@@ -811,10 +1090,15 @@ cmd_status() {
 
   [[ -x "$SAFEEXEC_DIR/rm" ]] && echo "rm wrapper:       [OK]" || echo "rm wrapper:       [MISSING]"
   [[ -x "$SAFEEXEC_DIR/git" ]] && echo "git wrapper:      [OK]" || echo "git wrapper:      [MISSING]"
+  local pm=""
+  for pm in "${GATED_PM_CMDS[@]}"; do
+    [[ -x "$SAFEEXEC_DIR/$pm" ]] && echo "$pm wrapper:      [OK]" || echo "$pm wrapper:      [MISSING]"
+  done
   [[ -x "$SAFEEXEC_DIR/safeexec" ]] && echo "safeexec cli:     [OK]" || echo "safeexec cli:     [MISSING]"
   [[ -f "$SUDOERS_FILE" ]] && echo "sudoers:          [OK]" || echo "sudoers:          [MISSING]"
 
-  for c in rm git; do
+  local c=""
+  for c in rm git "${GATED_PM_CMDS[@]}"; do
     local t="$LOCALBIN/$c"
     if symlink_points_to "$t" "$SAFEEXEC_DIR/$c"; then
       echo "$LOCALBIN/$c shim: [OK]"
@@ -825,6 +1109,9 @@ cmd_status() {
 
   echo "which rm:  ${rm_path:-n/a}"
   echo "which git: ${git_path:-n/a}"
+  for pm in "${GATED_PM_CMDS[@]}"; do
+    echo "which $pm: $(command -v "$pm" 2>/dev/null || echo n/a)"
+  done
   echo "which safeexec: $(command -v safeexec 2>/dev/null || echo n/a)"
 
   echo -n "effective gate rm:  "
@@ -838,6 +1125,21 @@ cmd_status() {
   else
     echo "[NO]"
   fi
+
+  for pm in "${GATED_PM_CMDS[@]}"; do
+    local pm_path
+    local marker
+    pm_path="$(command -v "$pm" 2>/dev/null || true)"
+    marker="$MARK_BREW_PM_PREFIX ($pm)"
+    echo -n "effective gate $pm: "
+    if [[ "$pm_path" == "$SAFEEXEC_DIR/$pm" || "$pm_path" == "$LOCALBIN/$pm" ]]; then
+      echo "[YES]"
+    elif is_darwin && [[ "$pm_path" == "$HOMEBREW_BIN/$pm" ]] && file_has_marker "$HOMEBREW_BIN/$pm" "$marker"; then
+      echo "[YES] (homebrew shim)"
+    else
+      echo "[NO]"
+    fi
+  done
 
   if is_linux; then
     hard_mode_status_one rm
