@@ -1,6 +1,6 @@
 # SafeExec: Destructive Command Interceptor (Ubuntu/Debian/WSL + macOS)
 
-**SafeExec** is a Bash-based safety layer that protects **Linux Distros**, **Windows/WSL**, and **macOS** from accidental (or hallucinated) destructive commands run by AI agents (Codex/GPT) or humans.
+**SafeExec** is a Bash-based safety layer that protects **Linux**, **Windows/WSL**, and **macOS** from accidental (or hallucinated) destructive commands run by AI agents (Codex/GPT) or humans.
 
 It intercepts dangerous commands (like `rm -rf` or `git reset --hard`) and enforces an interactive **confirmation gate** using a *real terminal input* (`/dev/tty` when available). This prevents pipes and most non-interactive execution from bypassing safety checks.
 
