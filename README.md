@@ -7,6 +7,23 @@ It intercepts dangerous commands (like `rm -rf` or `git reset --hard`) and enfor
 > SafeExec **does not modify shell init files** (`~/.zshrc`, `/etc/zprofile`, etc).  
 > If your shell prompt changed, that's a dotfile/theme issue (see “Shell prompt changed?” below).
 
+## Vibecoder Scope
+
+SafeExec is intentionally built for vibecoders running AI agents in local shells.
+
+- **Not a sandbox:** SafeExec is not a VM/container/cgroup replacement.
+- **What it protects:** Accidental destructive commands in human + AI terminal sessions.
+- **What it does not protect:** Sandbox escape prevention, malware containment, or full host isolation.
+- **Why wrap binaries:** Only specific destructive patterns are gated; normal command behavior passes through.
+- **Automation intent:** Use explicit scoped bypass for automation when needed (examples below).
+
+## Windows Support
+
+SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
+
+- Supported: WSL shell sessions (`bash`, `zsh`) where agent commands run.
+- Not currently targeted: native PowerShell/CMD binary wrapping.
+
 ---
 
 ## Features
@@ -260,6 +277,10 @@ git hard-mode:   [YES] (/usr/bin/git)
 ```bash
 /bin/rm -rf /tmp/junk
 /usr/bin/git reset --hard
+
+# Scoped bypass for automation
+SAFEEXEC_DISABLED=1 rm -rf /tmp/junk
+SAFEEXEC_DISABLED=1 git reset --hard
 ```
 
 ### macOS Homebrew bypass
