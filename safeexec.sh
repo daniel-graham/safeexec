@@ -168,6 +168,47 @@ close_tty_pair() {
   fi
 }
 
+is_foreground_tty() {
+  # Best-effort guard against background processes/panes stealing confirmation input.
+  # On Linux we can read controlling-tty foreground PGID from /proc. If unavailable, allow.
+  if [[ -r "/proc/$$/stat" ]]; then
+    local stat rest state ppid pgrp session tty_nr tpgid
+    stat="$(cat "/proc/$$/stat" 2>/dev/null || true)"
+    [[ -n "$stat" ]] || return 0
+    rest="${stat#*) }"
+    read -r state ppid pgrp session tty_nr tpgid _ <<<"$rest" || return 0
+    [[ -n "${pgrp:-}" && -n "${tpgid:-}" ]] || return 0
+    [[ "$tpgid" == "-1" || "$tpgid" == "0" ]] && return 0
+    [[ "$pgrp" == "$tpgid" ]]
+    return $?
+  fi
+  return 0
+}
+
+require_foreground_or_die() {
+  local cmd="$1"
+  if ! is_foreground_tty; then
+    echo "safeexec: BLOCKED (not foreground; refusing confirmation): rm $cmd" >&2
+    exit 126
+  fi
+}
+
+gen_challenge() {
+  local tok=""
+  if command -v od >/dev/null 2>&1 && [[ -r /dev/urandom ]]; then
+    tok="$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  fi
+  if [[ -z "$tok" ]]; then
+    local out
+    out="$(printf '%s' "$$:$RANDOM:$RANDOM:$(date +%s 2>/dev/null || echo 0)" | cksum 2>/dev/null || true)"
+    set -- $out
+    tok="${1:-}"
+    tok="${tok:0:6}"
+  fi
+  [[ -n "$tok" ]] || tok="000000"
+  printf '%s' "$tok"
+}
+
 confirm_or_die() {
   local cmd="$1"
   log_audit "BLOCKED: rm $cmd"
@@ -177,9 +218,15 @@ confirm_or_die() {
     exit 126
   fi
 
+  require_foreground_or_die "$cmd"
+
+  local challenge expected
+  challenge="$(gen_challenge)"
+  expected="confirm $challenge"
+
   local reply=""
   printf '\n\033[0;31m[SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:\033[0m\n  rm %s\n' "$cmd" >"$TTY_OUT"
-  printf 'Type "confirm" to execute: ' >"$TTY_OUT"
+  printf 'Type "%s" to execute: ' "$expected" >"$TTY_OUT"
 
   if ! IFS= read -r reply <"$TTY_IN"; then
     close_tty_pair
@@ -189,7 +236,7 @@ confirm_or_die() {
   printf '\n' >"$TTY_OUT"
   close_tty_pair
 
-  if [[ "$reply" != "confirm" ]]; then
+  if [[ "$reply" != "$expected" ]]; then
     echo "safeexec: cancelled" >&2
     exit 130
   fi
@@ -310,6 +357,45 @@ close_tty_pair() {
   fi
 }
 
+is_foreground_tty() {
+  if [[ -r "/proc/$$/stat" ]]; then
+    local stat rest state ppid pgrp session tty_nr tpgid
+    stat="$(cat "/proc/$$/stat" 2>/dev/null || true)"
+    [[ -n "$stat" ]] || return 0
+    rest="${stat#*) }"
+    read -r state ppid pgrp session tty_nr tpgid _ <<<"$rest" || return 0
+    [[ -n "${pgrp:-}" && -n "${tpgid:-}" ]] || return 0
+    [[ "$tpgid" == "-1" || "$tpgid" == "0" ]] && return 0
+    [[ "$pgrp" == "$tpgid" ]]
+    return $?
+  fi
+  return 0
+}
+
+require_foreground_or_die() {
+  local cmd="$1"
+  if ! is_foreground_tty; then
+    echo "safeexec: BLOCKED (not foreground; refusing confirmation): git $cmd" >&2
+    exit 126
+  fi
+}
+
+gen_challenge() {
+  local tok=""
+  if command -v od >/dev/null 2>&1 && [[ -r /dev/urandom ]]; then
+    tok="$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  fi
+  if [[ -z "$tok" ]]; then
+    local out
+    out="$(printf '%s' "$$:$RANDOM:$RANDOM:$(date +%s 2>/dev/null || echo 0)" | cksum 2>/dev/null || true)"
+    set -- $out
+    tok="${1:-}"
+    tok="${tok:0:6}"
+  fi
+  [[ -n "$tok" ]] || tok="000000"
+  printf '%s' "$tok"
+}
+
 confirm_or_die() {
   local cmd="$1"
   log_audit "BLOCKED: git $cmd"
@@ -319,9 +405,15 @@ confirm_or_die() {
     exit 126
   fi
 
+  require_foreground_or_die "$cmd"
+
+  local challenge expected
+  challenge="$(gen_challenge)"
+  expected="confirm $challenge"
+
   local reply=""
   printf '\n\033[0;33m[SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:\033[0m\n  git %s\n' "$cmd" >"$TTY_OUT"
-  printf 'Type "confirm" to execute: ' >"$TTY_OUT"
+  printf 'Type "%s" to execute: ' "$expected" >"$TTY_OUT"
 
   if ! IFS= read -r reply <"$TTY_IN"; then
     close_tty_pair
@@ -331,7 +423,7 @@ confirm_or_die() {
   printf '\n' >"$TTY_OUT"
   close_tty_pair
 
-  if [[ "$reply" != "confirm" ]]; then
+  if [[ "$reply" != "$expected" ]]; then
     echo "safeexec: cancelled" >&2
     exit 130
   fi
@@ -488,6 +580,45 @@ close_tty_pair() {
   fi
 }
 
+is_foreground_tty() {
+  if [[ -r "/proc/\\$\\$/stat" ]]; then
+    local stat rest state ppid pgrp session tty_nr tpgid
+    stat="\\$(cat "/proc/\\$\\$/stat" 2>/dev/null || true)"
+    [[ -n "\\$stat" ]] || return 0
+    rest="\\${stat#*) }"
+    read -r state ppid pgrp session tty_nr tpgid _ <<<"\\$rest" || return 0
+    [[ -n "\\${pgrp:-}" && -n "\\${tpgid:-}" ]] || return 0
+    [[ "\\$tpgid" == "-1" || "\\$tpgid" == "0" ]] && return 0
+    [[ "\\$pgrp" == "\\$tpgid" ]]
+    return \\$?
+  fi
+  return 0
+}
+
+require_foreground_or_die() {
+  local cmd="\\$1"
+  if ! is_foreground_tty; then
+    echo "safeexec: BLOCKED (not foreground; refusing confirmation): \\$PM \\$cmd" >&2
+    exit 126
+  fi
+}
+
+gen_challenge() {
+  local tok=""
+  if command -v od >/dev/null 2>&1 && [[ -r /dev/urandom ]]; then
+    tok="\\$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \\n' | tr '[:lower:]' '[:upper:]')"
+  fi
+  if [[ -z "\\$tok" ]]; then
+    local out
+    out="\\$(printf '%s' "\\$\\$:\\$RANDOM:\\$RANDOM:\\$(date +%s 2>/dev/null || echo 0)" | cksum 2>/dev/null || true)"
+    set -- \\$out
+    tok="\\${1:-}"
+    tok="\\${tok:0:6}"
+  fi
+  [[ -n "\\$tok" ]] || tok="000000"
+  printf '%s' "\\$tok"
+}
+
 confirm_or_die() {
   local cmd="\$1"
   log_audit "BLOCKED: \$PM \$cmd"
@@ -497,9 +628,15 @@ confirm_or_die() {
     exit 126
   fi
 
+  require_foreground_or_die "\$cmd"
+
+  local challenge expected
+  challenge="\$(gen_challenge)"
+  expected="confirm \$challenge"
+
   local reply=""
   printf '\\n\\033[0;36m[SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:\\033[0m\\n  %s %s\\n' "\$PM" "\$cmd" >"\$TTY_OUT"
-  printf 'Type "confirm" to execute: ' >"\$TTY_OUT"
+  printf 'Type "%s" to execute: ' "\$expected" >"\$TTY_OUT"
 
   if ! IFS= read -r reply <"\$TTY_IN"; then
     close_tty_pair
@@ -509,7 +646,7 @@ confirm_or_die() {
   printf '\\n' >"\$TTY_OUT"
   close_tty_pair
 
-  if [[ "\$reply" != "confirm" ]]; then
+  if [[ "\$reply" != "\$expected" ]]; then
     echo "safeexec: cancelled" >&2
     exit 130
   fi
