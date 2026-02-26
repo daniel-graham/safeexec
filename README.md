@@ -19,6 +19,28 @@ SafeExec is intentionally built for vibecoders running AI agents in local shells
 
 Note: SafeExec is an in-terminal guardrail. If your agent can type into your terminal, it can still type `confirm <token>`. The goal is to prevent accidental foot-guns and reduce wrong-context confirmations (especially with tmux and background tasks), not to be a hard security boundary.
 
+## Agent Policy (AGENTS.md)
+
+If you're running an AI agent that can execute commands (including background tasks), add a strict policy like this to your `AGENTS.md`:
+
+```md
+## SafeExec Policy
+- NEVER type `confirm` or `confirm <token>` for any prompt.
+- If `[SAFEEXEC]` appears (or any command asks for confirmation), STOP and ask the human to confirm manually.
+- NEVER bypass SafeExec:
+  - Do not set `SAFEEXEC_DISABLED=1`
+  - Do not run `safeexec -off` / `safeexec off`
+  - Do not call `*.safeexec.real`
+  - Do not call absolute-path binaries to evade wrappers (for example: `/bin/rm`, `/usr/bin/rm`, `/usr/bin/git`)
+- NEVER run destructive commands (even if asked):
+  - `rm` with both recursive + force flags (any ordering): `rm -rf`, `rm -fr`, `rm --recursive --force`
+  - `git reset`, `git revert`, `git checkout`, `git restore`
+  - `git clean -f`, `git switch -f`, `git switch --discard-changes`
+  - `git stash drop|clear|pop`
+  - `npm/yarn/pnpm/bun audit fix --force` (or `audit --fix --force`)
+- NEVER run the above in background jobs, other panes, or detached tmux sessions.
+```
+
 ## Windows Support
 
 SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
