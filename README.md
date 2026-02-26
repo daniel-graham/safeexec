@@ -17,6 +17,8 @@ SafeExec is intentionally built for vibecoders running AI agents in local shells
 - **Why wrap binaries:** Only specific destructive patterns are gated; normal command behavior passes through.
 - **Automation intent:** Use explicit scoped bypass for automation when needed (examples below).
 
+Note: SafeExec is an in-terminal guardrail. If your agent can type into your terminal, it can still type `confirm <token>`. The goal is to prevent accidental foot-guns and reduce wrong-context confirmations (especially with tmux and background tasks), not to be a hard security boundary.
+
 ## Windows Support
 
 SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
@@ -29,9 +31,10 @@ SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
 ## Features
 
 - **TTY-based confirmation gate**
-  - Requires the user to type `confirm` to proceed.
+  - Requires the user to type `confirm <token>` to proceed.
   - Reads from a real terminal device (not stdin), so `echo confirm | ...` doesn’t bypass it.
   - If there is **no usable TTY**, the command is **blocked** (exit `126`).
+  - Uses a one-time `<token>` to reduce accidental confirmations in tmux/background-task environments.
 
 - **WSL / Codex harness safety**
   - Some WSL/Codex setups have `/dev/tty` present but **unusable** (EACCES). SafeExec probes-open it.
@@ -120,7 +123,7 @@ rm -rf /var/www/html
 
 [SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:
   rm -rf /var/www/html
-Type "confirm" to execute:
+Type "confirm <token>" to execute:
 ```
 
 ### Example: `git reset --hard`
@@ -130,7 +133,7 @@ git reset --hard HEAD~1
 
 [SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:
   git reset --hard HEAD~1
-Type "confirm" to execute:
+Type "confirm <token>" to execute:
 ```
 
 ### Example: `npm audit fix --force`
@@ -140,10 +143,10 @@ npm audit fix --force
 
 [SAFEEXEC] DESTRUCTIVE COMMAND INTERCEPTED:
   npm audit fix --force
-Type "confirm" to execute:
+Type "confirm <token>" to execute:
 ```
 
-To proceed, type `confirm` + Enter. Any other input (or `Ctrl+C`) cancels with exit code `130`.
+To proceed, type `confirm <token>` + Enter. Any other input (or `Ctrl+C`) cancels with exit code `130`.
 
 If SafeExec cannot access a usable terminal input, it blocks with exit code `126`.
 
