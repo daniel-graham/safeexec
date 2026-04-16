@@ -581,24 +581,24 @@ close_tty_pair() {
 }
 
 is_foreground_tty() {
-  if [[ -r "/proc/\\$\\$/stat" ]]; then
+  if [[ -r "/proc/\$\$/stat" ]]; then
     local stat rest state ppid pgrp session tty_nr tpgid
-    stat="\\$(cat "/proc/\\$\\$/stat" 2>/dev/null || true)"
-    [[ -n "\\$stat" ]] || return 0
-    rest="\\${stat#*) }"
-    read -r state ppid pgrp session tty_nr tpgid _ <<<"\\$rest" || return 0
-    [[ -n "\\${pgrp:-}" && -n "\\${tpgid:-}" ]] || return 0
-    [[ "\\$tpgid" == "-1" || "\\$tpgid" == "0" ]] && return 0
-    [[ "\\$pgrp" == "\\$tpgid" ]]
-    return \\$?
+    stat="\$(cat "/proc/\$\$/stat" 2>/dev/null || true)"
+    [[ -n "\$stat" ]] || return 0
+    rest="\${stat#*) }"
+    read -r state ppid pgrp session tty_nr tpgid _ <<<"\$rest" || return 0
+    [[ -n "\${pgrp:-}" && -n "\${tpgid:-}" ]] || return 0
+    [[ "\$tpgid" == "-1" || "\$tpgid" == "0" ]] && return 0
+    [[ "\$pgrp" == "\$tpgid" ]]
+    return \$?
   fi
   return 0
 }
 
 require_foreground_or_die() {
-  local cmd="\\$1"
+  local cmd="\$1"
   if ! is_foreground_tty; then
-    echo "safeexec: BLOCKED (not foreground; refusing confirmation): \\$PM \\$cmd" >&2
+    echo "safeexec: BLOCKED (not foreground; refusing confirmation): \$PM \$cmd" >&2
     exit 126
   fi
 }
@@ -606,17 +606,17 @@ require_foreground_or_die() {
 gen_challenge() {
   local tok=""
   if command -v od >/dev/null 2>&1 && [[ -r /dev/urandom ]]; then
-    tok="\\$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \\n' | tr '[:lower:]' '[:upper:]')"
+    tok="\$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
   fi
-  if [[ -z "\\$tok" ]]; then
+  if [[ -z "\$tok" ]]; then
     local out
-    out="\\$(printf '%s' "\\$\\$:\\$RANDOM:\\$RANDOM:\\$(date +%s 2>/dev/null || echo 0)" | cksum 2>/dev/null || true)"
-    set -- \\$out
-    tok="\\${1:-}"
-    tok="\\${tok:0:6}"
+    out="\$(printf '%s' "\$\$:\$RANDOM:\$RANDOM:\$(date +%s 2>/dev/null || echo 0)" | cksum 2>/dev/null || true)"
+    set -- \$out
+    tok="\${1:-}"
+    tok="\${tok:0:6}"
   fi
-  [[ -n "\\$tok" ]] || tok="000000"
-  printf '%s' "\\$tok"
+  [[ -n "\$tok" ]] || tok="000000"
+  printf '%s' "\$tok"
 }
 
 confirm_or_die() {
