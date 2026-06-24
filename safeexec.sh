@@ -17,7 +17,7 @@ set -euo pipefail
 # It does NOT edit shell init files (/etc/z*rc, ~/.zshrc, etc).
 # =============================================================================
 
-VERSION="0.6.0"
+VERSION="0.6.1"
 
 SAFEEXEC_ROOT="/usr/local/safeexec"
 SAFEEXEC_DIR="$SAFEEXEC_ROOT/bin"
@@ -398,13 +398,19 @@ gen_challenge() {
 
 confirm_or_die() {
   local cmd="$1"
-  log_audit "BLOCKED: git $cmd"
+  local allow_no_tty="${2:-0}"
 
   if ! pick_tty_pair; then
+    if [[ "$allow_no_tty" -eq 1 ]]; then
+      log_audit "NO-TTY PASS: git $cmd"
+      return 0
+    fi
+    log_audit "BLOCKED: git $cmd"
     echo "safeexec: BLOCKED (no usable TTY; cannot prompt): git $cmd" >&2
     exit 126
   fi
 
+  log_audit "BLOCKED: git $cmd"
   require_foreground_or_die "$cmd"
 
   local challenge expected
@@ -472,33 +478,40 @@ while (( i < ${#args[@]} )); do
   esac
 done
 
-should_gate=0
+gate_hard=0
+gate_soft=0
 if [[ -n "$subcmd" ]]; then
   case "$subcmd" in
-    reset|revert|checkout|restore)
-      should_gate=1
+    reset|revert)
+      gate_hard=1
+      ;;
+    checkout|restore)
+      gate_soft=1
       ;;
     clean)
       for arg in "${args[@]}"; do
-        [[ "$arg" == "-f" || "$arg" == "--force" ]] && { should_gate=1; break; }
+        [[ "$arg" == "-f" || "$arg" == "--force" ]] && { gate_soft=1; break; }
       done
       ;;
     switch)
       for arg in "${args[@]}"; do
-        [[ "$arg" == "-f" || "$arg" == "--force" || "$arg" == "--discard-changes" ]] && { should_gate=1; break; }
+        [[ "$arg" == "-f" || "$arg" == "--force" || "$arg" == "--discard-changes" ]] && { gate_soft=1; break; }
       done
       ;;
     stash)
       if (( subcmd_idx + 1 < ${#args[@]} )); then
         stash_op="${args[$((subcmd_idx+1))]}"
-        case "$stash_op" in drop|clear|pop) should_gate=1 ;; esac
+        case "$stash_op" in drop|clear|pop) gate_hard=1 ;; esac
       fi
       ;;
   esac
 fi
 
-if [[ "$should_gate" -eq 1 ]]; then
-  confirm_or_die "$(printf '%q ' "${args[@]}")"
+cmd_q="$(printf '%q ' "${args[@]}")"
+if [[ "$gate_hard" -eq 1 ]]; then
+  confirm_or_die "$cmd_q" 0
+elif [[ "$gate_soft" -eq 1 ]]; then
+  confirm_or_die "$cmd_q" 1
 fi
 
 exec "$REAL_GIT" "${args[@]}"

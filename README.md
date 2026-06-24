@@ -61,7 +61,7 @@ SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
 - **TTY-based confirmation gate**
   - Requires the user to type `confirm <token>` to proceed.
   - Reads from a real terminal device (not stdin), so `echo confirm | ...` doesn’t bypass it.
-  - If there is **no usable TTY**, the command is **blocked** (exit `126`).
+  - If there is **no usable TTY**, hard-gated commands are **blocked** (exit `126`); soft-gated git commands **pass through** with audit logging.
   - Uses a one-time `<token>` to reduce accidental confirmations in tmux/background-task environments.
 
 - **WSL / Codex harness safety**
@@ -73,10 +73,10 @@ SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
     - `rm -rf ...`, `rm -fr ...`, `rm --recursive --force ...`
 
 - **Granular `git` gating**
-  - **Always gated:** `git reset`, `git revert`, `git checkout`, `git restore`
-  - **Gated if forced:** `git clean -f` / `git clean --force`
-  - **Gated if destructive:** `git switch -f`, `git switch --discard-changes`
-  - **Gated stash ops:** `git stash drop`, `git stash clear`, `git stash pop`
+  - **Hard gate (blocked without TTY):** `git reset`, `git revert`, `git stash drop|clear|pop`
+  - **Soft gate (prompt when TTY; pass through headless):** `git checkout`, `git restore`
+  - **Soft gate if forced:** `git clean -f` / `git clean --force`
+  - **Soft gate if destructive:** `git switch -f`, `git switch --discard-changes`
 
 - **Package manager force-audit gating**
   - Gates `npm`, `yarn`, `pnpm`, and `bun` when command shape matches `audit fix --force`
