@@ -35,8 +35,8 @@ If you're running an AI agent that can execute commands (including background ta
   - If you believe a bypass is required, ask first and explain why.
 - For destructive ops, do not execute without explicit approval for the exact command:
   - `rm` with both recursive + force flags (any ordering): `rm -rf`, `rm -fr`, `rm --recursive --force`
-  - `git reset`, `git revert`, `git checkout`, `git restore`
-  - `git clean -f`, `git switch -f`, `git switch --discard-changes`
+  - `git reset`, `git revert`
+  - `git stash drop|clear|pop`
   - `git stash drop|clear|pop`
   - `npm/yarn/pnpm/bun audit fix --force` (or `audit --fix --force`)
 - Do not run destructive ops from background jobs, other panes, or detached tmux sessions.
@@ -61,7 +61,7 @@ SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
 - **TTY-based confirmation gate**
   - Requires the user to type `confirm <token>` to proceed.
   - Reads from a real terminal device (not stdin), so `echo confirm | ...` doesn’t bypass it.
-  - If there is **no usable TTY**, hard-gated commands are **blocked** (exit `126`); soft-gated git commands **pass through** with audit logging.
+  - If there is **no usable TTY**, gated commands are **blocked** (exit `126`).
   - Uses a one-time `<token>` to reduce accidental confirmations in tmux/background-task environments.
 
 - **WSL / Codex harness safety**
@@ -73,10 +73,8 @@ SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
     - `rm -rf ...`, `rm -fr ...`, `rm --recursive --force ...`
 
 - **Granular `git` gating**
-  - **Hard gate (blocked without TTY):** `git reset`, `git revert`, `git stash drop|clear|pop`
-  - **Soft gate (prompt when TTY; pass through headless):** `git checkout`, `git restore`
-  - **Soft gate if forced:** `git clean -f` / `git clean --force`
-  - **Soft gate if destructive:** `git switch -f`, `git switch --discard-changes`
+  - **Gated (prompt when TTY; blocked without TTY):** `git reset`, `git revert`, `git stash drop|clear|pop`
+  - **Not gated:** routine agent/IDE ops such as `git checkout` and `git restore`
 
 - **Package manager force-audit gating**
   - Gates `npm`, `yarn`, `pnpm`, and `bun` when command shape matches `audit fix --force`

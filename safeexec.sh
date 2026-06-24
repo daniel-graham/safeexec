@@ -17,7 +17,7 @@ set -euo pipefail
 # It does NOT edit shell init files (/etc/z*rc, ~/.zshrc, etc).
 # =============================================================================
 
-VERSION="0.6.1"
+VERSION="0.6.2"
 
 SAFEEXEC_ROOT="/usr/local/safeexec"
 SAFEEXEC_DIR="$SAFEEXEC_ROOT/bin"
@@ -398,19 +398,13 @@ gen_challenge() {
 
 confirm_or_die() {
   local cmd="$1"
-  local allow_no_tty="${2:-0}"
+  log_audit "BLOCKED: git $cmd"
 
   if ! pick_tty_pair; then
-    if [[ "$allow_no_tty" -eq 1 ]]; then
-      log_audit "NO-TTY PASS: git $cmd"
-      return 0
-    fi
-    log_audit "BLOCKED: git $cmd"
     echo "safeexec: BLOCKED (no usable TTY; cannot prompt): git $cmd" >&2
     exit 126
   fi
 
-  log_audit "BLOCKED: git $cmd"
   require_foreground_or_die "$cmd"
 
   local challenge expected
@@ -479,24 +473,10 @@ while (( i < ${#args[@]} )); do
 done
 
 gate_hard=0
-gate_soft=0
 if [[ -n "$subcmd" ]]; then
   case "$subcmd" in
     reset|revert)
       gate_hard=1
-      ;;
-    checkout|restore)
-      gate_soft=1
-      ;;
-    clean)
-      for arg in "${args[@]}"; do
-        [[ "$arg" == "-f" || "$arg" == "--force" ]] && { gate_soft=1; break; }
-      done
-      ;;
-    switch)
-      for arg in "${args[@]}"; do
-        [[ "$arg" == "-f" || "$arg" == "--force" || "$arg" == "--discard-changes" ]] && { gate_soft=1; break; }
-      done
       ;;
     stash)
       if (( subcmd_idx + 1 < ${#args[@]} )); then
@@ -509,9 +489,7 @@ fi
 
 cmd_q="$(printf '%q ' "${args[@]}")"
 if [[ "$gate_hard" -eq 1 ]]; then
-  confirm_or_die "$cmd_q" 0
-elif [[ "$gate_soft" -eq 1 ]]; then
-  confirm_or_die "$cmd_q" 1
+  confirm_or_die "$cmd_q"
 fi
 
 exec "$REAL_GIT" "${args[@]}"
