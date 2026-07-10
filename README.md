@@ -113,6 +113,7 @@ SafeExec works for Windows users through **WSL** (recommended: Ubuntu on WSL2).
 ### macOS (soft mode)
 
 ```bash
+chmod +x safeexec.sh
 sudo ./safeexec.sh install
 hash -r
 ```
@@ -120,6 +121,7 @@ hash -r
 ### Ubuntu/Debian/WSL (soft mode)
 
 ```bash
+chmod +x safeexec.sh
 sudo ./safeexec.sh install
 hash -r
 ```
@@ -129,6 +131,7 @@ hash -r
 Hard mode is what makes SafeExec apply to **non-interactive harness execution** and cases where PATH is bypassed.
 
 ```bash
+chmod +x safeexec.sh
 sudo ./safeexec.sh install
 sudo ./safeexec.sh install-hard
 hash -r
