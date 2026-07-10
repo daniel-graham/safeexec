@@ -131,6 +131,7 @@ hash -r
 Hard mode is what makes SafeExec apply to **non-interactive harness execution** and cases where PATH is bypassed.
 
 ```bash
+chmod +x safeexec.sh
 sudo ./safeexec.sh install
 sudo ./safeexec.sh install-hard
 hash -r
@@ -201,6 +202,18 @@ One-command bypass (no prompting for that single invocation):
 ```bash
 SAFEEXEC_DISABLED=1 rm -rf /tmp/junk
 SAFEEXEC_DISABLED=1 git reset --hard
+```
+
+### Exact `rm` allowlist
+
+For trusted tools that repeatedly remove one known file, place its absolute path
+on its own line in `~/.config/safeexec/rm-allowlist`. SafeExec bypasses the
+`rm -rf` prompt only when that invocation has exactly one non-option argument
+and it exactly matches an allowlisted path. Blank lines and `#` comments are
+ignored. All other destructive `rm` commands remain gated.
+
+```text
+/Users/example/.oh-my-zsh/log/update.lock
 ```
 
 ---

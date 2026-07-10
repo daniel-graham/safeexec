@@ -118,6 +118,38 @@ is_disabled() {
   return 1
 }
 
+is_allowlisted_rm() {
+  local allowlist="${SAFEEXEC_RM_ALLOWLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/rm-allowlist}"
+  [[ -r "$allowlist" ]] || return 1
+
+  local target=""
+  local options_done=0
+  local arg=""
+  for arg in "$@"; do
+    if [[ "$options_done" -eq 0 && "$arg" == "--" ]]; then
+      options_done=1
+      continue
+    fi
+    if [[ "$options_done" -eq 0 && "$arg" == -* && "$arg" != "-" ]]; then
+      continue
+    fi
+    if [[ -n "$target" ]]; then
+      return 1
+    fi
+    target="$arg"
+  done
+
+  [[ -n "$target" ]] || return 1
+
+  local allowed=""
+  while IFS= read -r allowed || [[ -n "$allowed" ]]; do
+    [[ -z "$allowed" || "$allowed" == \#* ]] && continue
+    [[ "$target" == "$allowed" ]] && return 0
+  done <"$allowlist"
+
+  return 1
+}
+
 log_audit() {
   command -v logger >/dev/null 2>&1 && logger -t safeexec "$*" || true
 }
@@ -276,7 +308,7 @@ for arg in "$@"; do
   esac
 done
 
-if [[ "$force" -eq 1 && "$rec" -eq 1 ]]; then
+if [[ "$force" -eq 1 && "$rec" -eq 1 ]] && ! is_allowlisted_rm "$@"; then
   confirm_or_die "$(printf '%q ' "$@")"
 fi
 
