@@ -123,7 +123,14 @@ canonical_rm_path() {
   # leaves are valid rm targets; existing non-directory parents fail closed.
   local pending="$1" resolved="/" part link hops=0 follow_leaf="${2:-1}"
   [[ -n "$pending" && "$pending" != *$'\n'* ]] || return 1
-  [[ "$pending" == /* ]] || pending="$(pwd -P)/$pending"
+  if [[ "$pending" != /* ]]; then
+    # A sentinel preserves trailing newlines in path output so they can be
+    # rejected rather than silently changing the path used for matching.
+    pending="$(pwd -P && printf '.')" || return 1
+    pending="${pending%$'\n.'}"
+    [[ "$pending" != *$'\n'* ]] || return 1
+    pending="$pending/$1"
+  fi
   while [[ -n "$pending" ]]; do
     pending="${pending#/}"
     part="${pending%%/*}"
@@ -140,7 +147,8 @@ canonical_rm_path() {
     if [[ -L "$next" && ( -n "$pending" || "$follow_leaf" -eq 1 ) ]]; then
       hops=$((hops + 1))
       [[ "$hops" -le 40 ]] || return 1
-      link="$(readlink "$next")" || return 1
+      link="$(readlink -n "$next" && printf '.')" || return 1
+      link="${link%.}"
       [[ -n "$link" && "$link" != *$'\n'* ]] || return 1
       if [[ "$link" == /* ]]; then
         resolved="/"
@@ -162,13 +170,14 @@ is_allowlisted_rm_target() {
       tree:/*)
         root="${allowed#tree:}"
         [[ -d "$root" ]] || continue
-        root="$(cd -P -- "$root" 2>/dev/null && pwd -P)" || continue
-        [[ "$root" != / ]] || continue
+        root="$(cd -P -- "$root" 2>/dev/null && pwd -P && printf '.')" || continue
+        root="${root%$'\n.'}"
+        [[ "$root" != / && "$root" != *$'\n'* ]] || continue
         if [[ -z "$canonical" ]]; then
-          canonical="$(canonical_rm_path "$target")" || return 1
+          canonical="$(canonical_rm_path "$target")" || continue
           # rm unlinks a final symlink rather than its destination. Both the
           # directory entry and resolved target must be in the trusted tree.
-          entry="$(canonical_rm_path "$target" 0)" || return 1
+          entry="$(canonical_rm_path "$target" 0)" || continue
         fi
         [[ "$canonical" == "$root/"* && "$entry" == "$root/"* ]] && return 0
         ;;

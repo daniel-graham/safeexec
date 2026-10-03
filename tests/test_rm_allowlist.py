@@ -131,6 +131,58 @@ exit $?
     # Legacy: Plain Absolute Lines Exact Matching
     # =========================================================================
 
+    def test_relative_operand_from_newline_cwd_is_gated(self):
+        tree = Path(self.test_root) / "trusted"
+        tree.mkdir()
+        outside = Path(self.test_root) / "trusted\n"
+        outside.mkdir()
+        self.set_allowlist(["tree:" + str(tree)])
+        self.assertEqual(self.run_is_allowlisted(["-rf", "victim"], cwd=outside), 1)
+
+    def test_symlink_parent_with_newline_destination_is_gated(self):
+        tree = Path(self.test_root) / "trusted"
+        tree.mkdir()
+        outside = Path(self.test_root) / "trusted\n"
+        outside.mkdir()
+        link = tree / "escape"
+        link.symlink_to(outside, target_is_directory=True)
+        self.set_allowlist(["tree:" + str(tree)])
+        self.assertEqual(self.run_is_allowlisted(["-rf", str(link / "victim")]), 1)
+
+    def test_tree_root_with_newline_physical_path_is_gated(self):
+        tree = Path(self.test_root) / "trusted"
+        tree.mkdir()
+        outside = Path(self.test_root) / "trusted\n"
+        outside.mkdir()
+        alias = Path(self.test_root) / "alias"
+        alias.symlink_to(outside, target_is_directory=True)
+        self.set_allowlist(["tree:" + str(alias)])
+        self.assertEqual(self.run_is_allowlisted(["-rf", str(tree / "victim")]), 1)
+
+    def test_loop_symlink_exact_match_after_tree_is_allowed(self):
+        tree = Path(self.test_root) / "trusted"
+        tree.mkdir()
+        target = tree / "loop"
+        target.symlink_to("loop")
+        self.set_allowlist(["tree:" + str(tree), str(target)])
+        self.assertEqual(self.run_is_allowlisted(["-rf", str(target)]), 0)
+
+    def test_loop_symlink_exact_match_before_tree_is_allowed(self):
+        tree = Path(self.test_root) / "trusted"
+        tree.mkdir()
+        target = tree / "loop"
+        target.symlink_to("loop")
+        self.set_allowlist([str(target), "tree:" + str(tree)])
+        self.assertEqual(self.run_is_allowlisted(["-rf", str(target)]), 0)
+
+    def test_loop_symlink_tree_only_remains_gated(self):
+        tree = Path(self.test_root) / "trusted"
+        tree.mkdir()
+        target = tree / "loop"
+        target.symlink_to("loop")
+        self.set_allowlist(["tree:" + str(tree)])
+        self.assertEqual(self.run_is_allowlisted(["-rf", str(target)]), 1)
+
     def test_outside_symlink_into_tree_is_not_allowlisted(self):
         tree = Path(self.test_root) / "trusted"
         tree.mkdir()
