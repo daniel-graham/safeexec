@@ -204,17 +204,28 @@ SAFEEXEC_DISABLED=1 rm -rf /tmp/junk
 SAFEEXEC_DISABLED=1 git reset --hard
 ```
 
-### Exact `rm` allowlist
+### `rm` allowlist
 
-For trusted tools that repeatedly remove one known file, place its absolute path
-on its own line in `~/.config/safeexec/rm-allowlist`. SafeExec bypasses the
-`rm -rf` prompt only when that invocation has exactly one non-option argument
-and it exactly matches an allowlisted path. Blank lines and `#` comments are
-ignored. All other destructive `rm` commands remain gated.
+Place trusted absolute paths on separate lines in
+`~/.config/safeexec/rm-allowlist`. A plain path matches an exact operand, as
+before. `tree:/absolute/directory` permits descendants of an existing directory
+but excludes the directory itself. Every operand must match an entry before
+SafeExec skips the `rm -rf` prompt. Blank lines and `#` comments are ignored.
+`SAFEEXEC_RM_ALLOWLIST` can select an alternative file.
 
 ```text
 /Users/example/.oh-my-zsh/log/update.lock
+tree:/Users/example/Dev/REPOS
+tree:/Users/example/.codex/tmp
 ```
+
+Tree entries resolve relative operands, `..`, and symlinks before checking path
+boundaries. Sibling prefixes and symlink escapes do not match. Missing leaves
+are supported; `/` cannot be a trusted tree. Choose narrow trees: trusting a
+repository tree permits removal of whole repositories and their contents.
+This is a confirmation convenience, not a filesystem sandbox: concurrent
+changes to symlinks or directory contents can race the check. Other command
+wrappers and filesystem permissions are unaffected.
 
 ---
 
