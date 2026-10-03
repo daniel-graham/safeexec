@@ -118,13 +118,79 @@ is_disabled() {
   return 1
 }
 
+canonical_rm_path() {
+  # Resolve symlinks component by component, including before '..'. Missing
+  # leaves are valid rm targets; existing non-directory parents fail closed.
+  local pending="$1" resolved="/" part link hops=0 follow_leaf="${2:-1}"
+  [[ -n "$pending" && "$pending" != *$'\n'* ]] || return 1
+  if [[ "$pending" != /* ]]; then
+    # A sentinel preserves trailing newlines in path output so they can be
+    # rejected rather than silently changing the path used for matching.
+    pending="$(pwd -P && printf '.')" || return 1
+    pending="${pending%$'\n.'}"
+    [[ "$pending" != *$'\n'* ]] || return 1
+    pending="$pending/$1"
+  fi
+  while [[ -n "$pending" ]]; do
+    pending="${pending#/}"
+    part="${pending%%/*}"
+    if [[ "$pending" == */* ]]; then
+      pending="${pending#*/}"
+    else
+      pending=""
+    fi
+    case "$part" in
+      ''|.) continue ;;
+      ..) resolved="${resolved%/*}"; [[ -n "$resolved" ]] || resolved="/"; continue ;;
+    esac
+    local next="${resolved%/}/$part"
+    if [[ -L "$next" && ( -n "$pending" || "$follow_leaf" -eq 1 ) ]]; then
+      hops=$((hops + 1))
+      [[ "$hops" -le 40 ]] || return 1
+      link="$(readlink -n "$next" && printf '.')" || return 1
+      link="${link%.}"
+      [[ -n "$link" && "$link" != *$'\n'* ]] || return 1
+      if [[ "$link" == /* ]]; then
+        resolved="/"
+      fi
+      pending="$link${pending:+/$pending}"
+    else
+      [[ ! -e "$next" || -d "$next" || -z "$pending" ]] || return 1
+      resolved="$next"
+    fi
+  done
+  printf '%s\n' "$resolved"
+}
+
+is_allowlisted_rm_target() {
+  local target="$1" allowlist="$2" allowed root canonical="" entry=""
+  while IFS= read -r allowed || [[ -n "$allowed" ]]; do
+    [[ -z "$allowed" || "$allowed" == \#* ]] && continue
+    case "$allowed" in
+      tree:/*)
+        root="${allowed#tree:}"
+        [[ -d "$root" ]] || continue
+        root="$(cd -P -- "$root" 2>/dev/null && pwd -P && printf '.')" || continue
+        root="${root%$'\n.'}"
+        [[ "$root" != / && "$root" != *$'\n'* ]] || continue
+        if [[ -z "$canonical" ]]; then
+          canonical="$(canonical_rm_path "$target")" || continue
+          # rm unlinks a final symlink rather than its destination. Both the
+          # directory entry and resolved target must be in the trusted tree.
+          entry="$(canonical_rm_path "$target" 0)" || continue
+        fi
+        [[ "$canonical" == "$root/"* && "$entry" == "$root/"* ]] && return 0
+        ;;
+      /*) [[ "$target" == "$allowed" ]] && return 0 ;;
+    esac
+  done <"$allowlist"
+  return 1
+}
+
 is_allowlisted_rm() {
   local allowlist="${SAFEEXEC_RM_ALLOWLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/rm-allowlist}"
   [[ -r "$allowlist" ]] || return 1
-
-  local target=""
-  local options_done=0
-  local arg=""
+  local options_done=0 targets=0 arg
   for arg in "$@"; do
     if [[ "$options_done" -eq 0 && "$arg" == "--" ]]; then
       options_done=1
@@ -133,21 +199,13 @@ is_allowlisted_rm() {
     if [[ "$options_done" -eq 0 && "$arg" == -* && "$arg" != "-" ]]; then
       continue
     fi
-    if [[ -n "$target" ]]; then
-      return 1
-    fi
-    target="$arg"
+    # BSD rm stops parsing options at the first operand. Treat later flags as
+    # operands too; GNU option permutation may prompt conservatively.
+    options_done=1
+    is_allowlisted_rm_target "$arg" "$allowlist" || return 1
+    targets=$((targets + 1))
   done
-
-  [[ -n "$target" ]] || return 1
-
-  local allowed=""
-  while IFS= read -r allowed || [[ -n "$allowed" ]]; do
-    [[ -z "$allowed" || "$allowed" == \#* ]] && continue
-    [[ "$target" == "$allowed" ]] && return 0
-  done <"$allowlist"
-
-  return 1
+  [[ "$targets" -gt 0 ]]
 }
 
 log_audit() {
