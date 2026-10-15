@@ -225,7 +225,29 @@ are supported; `/` cannot be a trusted tree. Choose narrow trees: trusting a
 repository tree permits removal of whole repositories and their contents.
 This is a confirmation convenience, not a filesystem sandbox: concurrent
 changes to symlinks or directory contents can race the check. Other command
-wrappers and filesystem permissions are unaffected.
+wrappers and filesystem permissions are unaffected except for the Git gates
+described below.
+
+### Repository-scoped Git exceptions
+
+The Git wrapper also honors `tree:` entries in the same allowlist for its
+existing confirmation gates: `stash drop`, `stash clear`, `stash pop`, `reset`,
+and `revert`. For example, `tree:/Users/example/Dev/REPOS` permits those commands
+in repositories below that directory. Exact `rm` entries do not authorize Git.
+
+SafeExec asks Git for the effective working-tree root, Git directory, and shared
+Git directory, using the original global options (including repeated `-C`) and
+environment. The effective index and object-store paths are checked too, so
+`GIT_INDEX_FILE` and `GIT_OBJECT_DIRECTORY` cannot redirect the operation outside
+the trusted trees. Each path must be a trusted descendant. A linked worktree
+therefore needs both its checkout and its shared repository metadata covered.
+An untrusted repository stays gated even if the command starts in a trusted
+directory. Bare repositories and failed context lookups remain gated.
+
+`SAFEEXEC_GIT_ALLOWLIST` selects a Git-specific list; otherwise Git uses
+`SAFEEXEC_RM_ALLOWLIST` or the default `~/.config/safeexec/rm-allowlist`.
+Install the updated wrapper to activate this behavior. Package-manager gates
+retain their existing behavior.
 
 ---
 

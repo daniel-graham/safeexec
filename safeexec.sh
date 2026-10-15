@@ -95,29 +95,9 @@ is_homebrew_cellar_symlink() {
 # WRAPPERS (in /usr/local/safeexec/bin)
 # =============================================================================
 
-write_wrapper_rm() {
-  ensure_dir_0755 "$SAFEEXEC_DIR"
-  local dst="$SAFEEXEC_DIR/rm"
-
-  cat >"$dst" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-STATE_FILE_USER="${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/disabled"
-STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
-
-is_disabled() {
-  [[ "${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
-  [[ -f "$STATE_FILE_GLOBAL" ]] && return 0
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    local h=""
-    h="$(eval "echo ~$SUDO_USER" 2>/dev/null || true)"
-    [[ -n "$h" && -f "$h/.config/safeexec/disabled" ]] && return 0
-  fi
-  [[ -f "$STATE_FILE_USER" ]] && return 0
-  return 1
-}
-
+# Emit the same path-boundary checks for rm and repository-scoped Git gates.
+write_allowlist_helpers() {
+  cat <<'EOF'
 canonical_rm_path() {
   # Resolve symlinks component by component, including before '..'. Missing
   # leaves are valid rm targets; existing non-directory parents fail closed.
@@ -163,7 +143,7 @@ canonical_rm_path() {
 }
 
 is_allowlisted_rm_target() {
-  local target="$1" allowlist="$2" allowed root canonical="" entry=""
+  local target="$1" allowlist="$2" allowed root canonical="" entry="" tree_only="${3:-0}"
   while IFS= read -r allowed || [[ -n "$allowed" ]]; do
     [[ -z "$allowed" || "$allowed" == \#* ]] && continue
     case "$allowed" in
@@ -181,11 +161,41 @@ is_allowlisted_rm_target() {
         fi
         [[ "$canonical" == "$root/"* && "$entry" == "$root/"* ]] && return 0
         ;;
-      /*) [[ "$target" == "$allowed" ]] && return 0 ;;
+      /*) [[ "$tree_only" -eq 0 && "$target" == "$allowed" ]] && return 0 ;;
     esac
   done <"$allowlist"
   return 1
 }
+
+EOF
+}
+
+write_wrapper_rm() {
+  ensure_dir_0755 "$SAFEEXEC_DIR"
+  local dst="$SAFEEXEC_DIR/rm"
+
+  cat >"$dst" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_FILE_USER="${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/disabled"
+STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
+
+is_disabled() {
+  [[ "${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
+  [[ -f "$STATE_FILE_GLOBAL" ]] && return 0
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    local h=""
+    h="$(eval "echo ~$SUDO_USER" 2>/dev/null || true)"
+    [[ -n "$h" && -f "$h/.config/safeexec/disabled" ]] && return 0
+  fi
+  [[ -f "$STATE_FILE_USER" ]] && return 0
+  return 1
+}
+
+EOF
+  write_allowlist_helpers >>"$dst"
+  cat >>"$dst" <<'EOF'
 
 is_allowlisted_rm() {
   local allowlist="${SAFEEXEC_RM_ALLOWLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/rm-allowlist}"
@@ -399,6 +409,31 @@ is_disabled() {
   return 1
 }
 
+EOF
+  write_allowlist_helpers >>"$dst"
+  cat >>"$dst" <<'EOF'
+
+is_allowlisted_git() {
+  local allowlist="${SAFEEXEC_GIT_ALLOWLIST:-${SAFEEXEC_RM_ALLOWLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/rm-allowlist}}"
+  [[ -r "$allowlist" && "$subcmd_idx" -ge 0 ]] || return 1
+  local flag path
+  local query=()
+  # Query Git with the original global options and environment, rather than
+  # assuming cwd identifies the repository. Worktrees can share refs elsewhere.
+  for flag in --show-toplevel --absolute-git-dir --git-common-dir index objects; do
+    case "$flag" in
+      index|objects) query=(--git-path "$flag") ;;
+      *) query=("$flag") ;;
+    esac
+    path="$("$REAL_GIT" "${args[@]:0:$subcmd_idx}" rev-parse --path-format=absolute "${query[@]}" 2>/dev/null && printf '.')" || return 1
+    path="${path%$'\n.'}"
+    [[ "$path" == /* && "$path" != *$'\n'* ]] || return 1
+    [[ "$flag" == index || -d "$path" ]] || return 1
+    is_allowlisted_rm_target "$path" "$allowlist" 1 || return 1
+  done
+  return 0
+}
+
 log_audit() {
   command -v logger >/dev/null 2>&1 && logger -t safeexec "$*" || true
 }
@@ -578,7 +613,7 @@ if [[ -n "$subcmd" ]]; then
 fi
 
 cmd_q="$(printf '%q ' "${args[@]}")"
-if [[ "$gate_hard" -eq 1 ]]; then
+if [[ "$gate_hard" -eq 1 ]] && ! is_allowlisted_git; then
   confirm_or_die "$cmd_q"
 fi
 
