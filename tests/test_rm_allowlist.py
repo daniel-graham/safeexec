@@ -20,7 +20,6 @@ Contract under test:
 """
 
 import os
-import re
 import subprocess
 import tempfile
 import unittest
@@ -34,32 +33,16 @@ def extract_wrapper_functions(target_file: Path = None) -> str:
     """Extract functions and environment setup from the embedded rm wrapper in safeexec.sh."""
     safeexec_path = target_file if target_file is not None else SAFEEXEC_SH
     content = safeexec_path.read_text(encoding="utf-8")
-    func_idx = content.find("write_wrapper_rm()")
-    if func_idx == -1:
-        raise RuntimeError("write_wrapper_rm() not found in safeexec.sh")
-
-    cat_idx = content.find("cat ", func_idx)
-    eof_match = re.search(r"<<\s*['\"]?([A-Za-z0-9_-]+)['\"]?", content[cat_idx : cat_idx + 100])
-    if not eof_match:
-        raise RuntimeError("Could not find heredoc EOF tag in write_wrapper_rm")
-    eof_tag = eof_match.group(1)
-
-    # Find starting EOF marker
-    start_pos = -1
-    for quote in ["'", '"', ""]:
-        marker = f"<<{quote}{eof_tag}{quote}\n"
-        pos = content.find(marker, cat_idx)
-        if pos != -1:
-            start_pos = pos + len(marker)
-            break
-    if start_pos == -1:
-        raise RuntimeError(f"Could not find opening heredoc marker for {eof_tag}")
-
-    end_pos = content.find(f"\n{eof_tag}", start_pos)
-    if end_pos == -1:
-        raise RuntimeError(f"Could not find closing heredoc marker for {eof_tag}")
-
-    wrapper_text = content[start_pos:end_pos]
+    library, separator, tail = content.rpartition('\nmain "$@"')
+    if not separator or tail.strip():
+        raise RuntimeError("Could not isolate installer definitions")
+    with tempfile.TemporaryDirectory() as directory:
+        subprocess.run(
+            ["bash", "-c", library + '\nSAFEEXEC_DIR="$1"\nwrite_wrapper_rm\n',
+             "safeexec-test", directory],
+            check=True, capture_output=True, text=True,
+        )
+        wrapper_text = (Path(directory) / "rm").read_text(encoding="utf-8")
 
     # Stop before top-level command execution entry point
     markers = [
@@ -182,6 +165,17 @@ exit $?
         target.symlink_to("loop")
         self.set_allowlist(["tree:" + str(tree)])
         self.assertEqual(self.run_is_allowlisted(["-rf", str(target)]), 1)
+
+    def test_outside_directory_symlink_suffixes_remain_gated(self):
+        tree = Path(self.test_root) / "trusted"
+        child = tree / "child"
+        child.mkdir(parents=True)
+        outside = Path(self.test_root) / "outside-link"
+        outside.symlink_to(child, target_is_directory=True)
+        self.set_allowlist(["tree:" + str(tree)])
+        for suffix in ("", "/", "//", "/.", "///./"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.run_is_allowlisted(["-rf", str(outside) + suffix]), 1)
 
     def test_outside_symlink_into_tree_is_not_allowlisted(self):
         tree = Path(self.test_root) / "trusted"

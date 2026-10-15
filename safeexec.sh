@@ -95,29 +95,22 @@ is_homebrew_cellar_symlink() {
 # WRAPPERS (in /usr/local/safeexec/bin)
 # =============================================================================
 
-write_wrapper_rm() {
-  ensure_dir_0755 "$SAFEEXEC_DIR"
-  local dst="$SAFEEXEC_DIR/rm"
-
-  cat >"$dst" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-STATE_FILE_USER="${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/disabled"
-STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
-
-is_disabled() {
-  [[ "${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
-  [[ -f "$STATE_FILE_GLOBAL" ]] && return 0
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    local h=""
-    h="$(eval "echo ~$SUDO_USER" 2>/dev/null || true)"
-    [[ -n "$h" && -f "$h/.config/safeexec/disabled" ]] && return 0
-  fi
-  [[ -f "$STATE_FILE_USER" ]] && return 0
-  return 1
+# Recognize our wrappers before selecting a backend, including separate shims.
+write_binary_helpers() {
+  cat <<'EOF'
+is_safeexec_wrapper() {
+  LC_ALL=C head -c 4096 "$1" 2>/dev/null | LC_ALL=C grep -aEq 'SAFEEXEC|/safeexec/'
 }
 
+is_real_command() {
+  [[ -n "$1" && -x "$1" ]] && ! [[ "$1" -ef "$0" ]] && ! is_safeexec_wrapper "$1"
+}
+EOF
+}
+
+# Emit the same path-boundary checks for rm and repository-scoped Git gates.
+write_allowlist_helpers() {
+  cat <<'EOF'
 canonical_rm_path() {
   # Resolve symlinks component by component, including before '..'. Missing
   # leaves are valid rm targets; existing non-directory parents fail closed.
@@ -130,6 +123,17 @@ canonical_rm_path() {
     pending="${pending%$'\n.'}"
     [[ "$pending" != *$'\n'* ]] || return 1
     pending="$pending/$1"
+  fi
+  if [[ "$follow_leaf" -eq 0 ]]; then
+    # Redundant trailing separators/dots must not turn a final symlink into
+    # a parent component and erase the directory-entry boundary check.
+    while [[ "$pending" == */ || "$pending" == */. ]]; do
+      case "$pending" in
+        */) pending="${pending%/}" ;;
+        */.) pending="${pending%/.}" ;;
+      esac
+    done
+    [[ -n "$pending" ]] || pending="/"
   fi
   while [[ -n "$pending" ]]; do
     pending="${pending#/}"
@@ -163,7 +167,7 @@ canonical_rm_path() {
 }
 
 is_allowlisted_rm_target() {
-  local target="$1" allowlist="$2" allowed root canonical="" entry=""
+  local target="$1" allowlist="$2" allowed root canonical="" entry="" tree_only="${3:-0}"
   while IFS= read -r allowed || [[ -n "$allowed" ]]; do
     [[ -z "$allowed" || "$allowed" == \#* ]] && continue
     case "$allowed" in
@@ -181,11 +185,42 @@ is_allowlisted_rm_target() {
         fi
         [[ "$canonical" == "$root/"* && "$entry" == "$root/"* ]] && return 0
         ;;
-      /*) [[ "$target" == "$allowed" ]] && return 0 ;;
+      /*) [[ "$tree_only" -eq 0 && "$target" == "$allowed" ]] && return 0 ;;
     esac
   done <"$allowlist"
   return 1
 }
+
+EOF
+}
+
+write_wrapper_rm() {
+  ensure_dir_0755 "$SAFEEXEC_DIR"
+  local dst="$SAFEEXEC_DIR/rm"
+
+  cat >"$dst" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_FILE_USER="${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/disabled"
+STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
+
+is_disabled() {
+  [[ "${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
+  [[ -f "$STATE_FILE_GLOBAL" ]] && return 0
+  if [[ "${EUID:-$(id -u)}" -eq 0 && "${SUDO_USER:-}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+    local h=""
+    h="$(eval "printf '%s\\n' ~$SUDO_USER" 2>/dev/null || true)"
+    [[ "$h" == /* && -f "$h/.config/safeexec/disabled" ]] && return 0
+  fi
+  [[ -f "$STATE_FILE_USER" ]] && return 0
+  return 1
+}
+
+EOF
+  write_binary_helpers >>"$dst"
+  write_allowlist_helpers >>"$dst"
+  cat >>"$dst" <<'EOF'
 
 is_allowlisted_rm() {
   local allowlist="${SAFEEXEC_RM_ALLOWLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/rm-allowlist}"
@@ -337,12 +372,18 @@ confirm_or_die() {
 # Prefer diverted real binary if present
 REAL_RM=""
 for cand in /usr/bin/rm.safeexec.real /bin/rm.safeexec.real /usr/bin/rm /bin/rm; do
-  if [[ -x "$cand" ]] && ! [[ "$cand" -ef "$0" ]]; then
+  if is_real_command "$cand"; then
     REAL_RM="$cand"
     break
   fi
 done
-[[ -n "$REAL_RM" ]] || REAL_RM="$(command -p -v rm 2>/dev/null || echo '/bin/rm')"
+if [[ -z "$REAL_RM" ]]; then
+  REAL_RM="$(command -p -v rm 2>/dev/null || true)"
+  if ! is_real_command "$REAL_RM"; then
+    echo "safeexec: rm: no unwrapped executable found" >&2
+    exit 127
+  fi
+fi
 
 if is_disabled; then
   exec "$REAL_RM" "$@"
@@ -390,13 +431,39 @@ STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
 is_disabled() {
   [[ "${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
   [[ -f "$STATE_FILE_GLOBAL" ]] && return 0
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  if [[ "${EUID:-$(id -u)}" -eq 0 && "${SUDO_USER:-}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
     local h=""
-    h="$(eval "echo ~$SUDO_USER" 2>/dev/null || true)"
-    [[ -n "$h" && -f "$h/.config/safeexec/disabled" ]] && return 0
+    h="$(eval "printf '%s\\n' ~$SUDO_USER" 2>/dev/null || true)"
+    [[ "$h" == /* && -f "$h/.config/safeexec/disabled" ]] && return 0
   fi
   [[ -f "$STATE_FILE_USER" ]] && return 0
   return 1
+}
+
+EOF
+  write_binary_helpers >>"$dst"
+  write_allowlist_helpers >>"$dst"
+  cat >>"$dst" <<'EOF'
+
+is_allowlisted_git() {
+  local allowlist="${SAFEEXEC_GIT_ALLOWLIST:-${SAFEEXEC_RM_ALLOWLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/safeexec/rm-allowlist}}"
+  [[ -r "$allowlist" && "$subcmd_idx" -ge 0 ]] || return 1
+  local flag path
+  local query=()
+  # Query Git with the original global options and environment, rather than
+  # assuming cwd identifies the repository. Worktrees can share refs elsewhere.
+  for flag in --show-toplevel --absolute-git-dir --git-common-dir index objects; do
+    case "$flag" in
+      index|objects) query=(--git-path "$flag") ;;
+      *) query=("$flag") ;;
+    esac
+    path="$("$REAL_GIT" "${args[@]:0:$subcmd_idx}" rev-parse --path-format=absolute "${query[@]}" 2>/dev/null && printf '.')" || return 1
+    path="${path%$'\n.'}"
+    [[ "$path" == /* && "$path" != *$'\n'* ]] || return 1
+    [[ "$flag" == index || -d "$path" ]] || return 1
+    is_allowlisted_rm_target "$path" "$allowlist" 1 || return 1
+  done
+  return 0
 }
 
 log_audit() {
@@ -533,14 +600,24 @@ for cand in \
   /usr/bin/git \
   /bin/git \
 ; do
-  if [[ -x "$cand" ]] && ! [[ "$cand" -ef "$0" ]]; then
+  if is_real_command "$cand"; then
     REAL_GIT="$cand"
     break
   fi
 done
-[[ -n "$REAL_GIT" ]] || REAL_GIT="$(command -p -v git 2>/dev/null || echo '/usr/bin/git')"
+if [[ -z "$REAL_GIT" ]]; then
+  REAL_GIT="$(command -p -v git 2>/dev/null || true)"
+  if ! is_real_command "$REAL_GIT"; then
+    echo "safeexec: git: no unwrapped executable found" >&2
+    exit 127
+  fi
+fi
 
 if is_disabled; then
+  exec "$REAL_GIT" "$@"
+fi
+
+if [[ "$#" -eq 0 ]]; then
   exec "$REAL_GIT" "$@"
 fi
 
@@ -553,8 +630,11 @@ i=0
 while (( i < ${#args[@]} )); do
   a="${args[i]}"
   case "$a" in
+    --exec-path|--html-path|--man-path|--info-path)
+      # These informational forms print a path and exit without a subcommand.
+      exec "$REAL_GIT" "$@" ;;
     --*=*) ((i+=1)); continue ;;
-    -C|-c|--exec-path|--html-path|--man-path|--info-path|--git-dir|--work-tree|--namespace|--super-prefix)
+    -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
       ((i+=2)); continue ;;
     --) ((i+=1)); break ;;
     -*) ((i+=1)); continue ;;
@@ -577,12 +657,11 @@ if [[ -n "$subcmd" ]]; then
   esac
 fi
 
-cmd_q="$(printf '%q ' "${args[@]}")"
-if [[ "$gate_hard" -eq 1 ]]; then
-  confirm_or_die "$cmd_q"
+if [[ "$gate_hard" -eq 1 ]] && ! is_allowlisted_git; then
+  confirm_or_die "$(printf '%q ' "$@")"
 fi
 
-exec "$REAL_GIT" "${args[@]}"
+exec "$REAL_GIT" "$@"
 EOF
 
   chmod 0755 "$dst"
@@ -604,10 +683,10 @@ STATE_FILE_GLOBAL="/usr/local/safeexec/disabled"
 is_disabled() {
   [[ "\${SAFEEXEC_DISABLED:-}" == "1" ]] && return 0
   [[ -f "\$STATE_FILE_GLOBAL" ]] && return 0
-  if [[ -n "\${SUDO_USER:-}" ]]; then
+  if [[ "\${EUID:-\$(id -u)}" -eq 0 && "\${SUDO_USER:-}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
     local h=""
-    h="\$(eval "echo ~\$SUDO_USER" 2>/dev/null || true)"
-    [[ -n "\$h" && -f "\$h/.config/safeexec/disabled" ]] && return 0
+    h="\$(eval "printf '%s\\\\n' ~\$SUDO_USER" 2>/dev/null || true)"
+    [[ "\$h" == /* && -f "\$h/.config/safeexec/disabled" ]] && return 0
   fi
   [[ -f "\$STATE_FILE_USER" ]] && return 0
   return 1
@@ -735,6 +814,10 @@ confirm_or_die() {
   log_audit "CONFIRMED: \$PM \$cmd"
 }
 
+EOF
+  write_binary_helpers >>"$dst"
+  cat >>"$dst" <<EOF
+
 REAL_PM=""
 for cand in \
   "/usr/bin/\${PM}.safeexec.real" \
@@ -746,20 +829,24 @@ for cand in \
   "/usr/bin/\$PM" \
   "/bin/\$PM" \
 ; do
-  if [[ -x "\$cand" ]] && ! [[ "\$cand" -ef "\$0" ]]; then
+  if is_real_command "\$cand"; then
     REAL_PM="\$cand"
     break
   fi
 done
 if [[ -z "\$REAL_PM" ]]; then
   REAL_PM="\$(command -p -v "\$PM" 2>/dev/null || true)"
-fi
-if [[ -z "\$REAL_PM" ]]; then
-  echo "safeexec: \$PM: command not found" >&2
-  exit 127
+  if ! is_real_command "\$REAL_PM"; then
+    echo "safeexec: \$PM: no unwrapped executable found" >&2
+    exit 127
+  fi
 fi
 
 if is_disabled; then
+  exec "\$REAL_PM" "\$@"
+fi
+
+if [[ "\$#" -eq 0 ]]; then
   exec "\$REAL_PM" "\$@"
 fi
 
@@ -810,7 +897,7 @@ if [[ "\$should_gate" -eq 1 ]]; then
   confirm_or_die "\$(printf '%q ' "\${args[@]}")"
 fi
 
-exec "\$REAL_PM" "\${args[@]}"
+exec "\$REAL_PM" "\$@"
 EOF
 
   chmod 0755 "$dst"
@@ -919,7 +1006,7 @@ install_localbin_shims() {
 
     # Special-case: Homebrew Cellar symlink in /usr/local/bin on Intel macOS
     if is_darwin && [[ -L "$target" ]] && ! symlink_points_to "$target" "$src" && is_homebrew_cellar_symlink "$target"; then
-      if [[ -e "$backup" ]]; then
+      if [[ -e "$backup" || -L "$backup" ]]; then
         echo "safeexec: WARNING: $backup already exists; not modifying $target."
         continue
       fi
@@ -950,8 +1037,8 @@ remove_localbin_shims() {
     fi
 
     # Restore Intel Homebrew backup if present and target missing
-    if [[ -e "$backup" ]]; then
-      if [[ ! -e "$target" ]]; then
+    if [[ -e "$backup" || -L "$backup" ]]; then
+      if [[ ! -e "$target" && ! -L "$target" ]]; then
         mv "$backup" "$target"
         echo "safeexec: restored $target from $backup"
       else
@@ -968,12 +1055,15 @@ install_homebrew_git_shim() {
 
   ensure_dir_0755 "$HOMEBREW_BIN"
 
-  # Already shimmed?
-  if [[ -e "$HOMEBREW_GIT_REAL" ]] && file_has_marker "$HOMEBREW_GIT" "$MARK_BREW"; then
+  # Never back up our own shim, including when its backup is missing/dangling.
+  if file_has_marker "$HOMEBREW_GIT" "$MARK_BREW"; then
+    if [[ ! -e "$HOMEBREW_GIT_REAL" ]]; then
+      echo "safeexec: WARNING: Homebrew git backup unavailable; relink git with Homebrew."
+    fi
     return 0
   fi
 
-  if [[ -e "$HOMEBREW_GIT_REAL" ]]; then
+  if [[ -e "$HOMEBREW_GIT_REAL" || -L "$HOMEBREW_GIT_REAL" ]]; then
     echo "safeexec: WARNING: $HOMEBREW_GIT_REAL exists but $HOMEBREW_GIT is not our shim; leaving it alone."
     return 0
   fi
@@ -1010,14 +1100,17 @@ EOF
 
 remove_homebrew_git_shim() {
   is_darwin || return 0
-  [[ -e "$HOMEBREW_GIT_REAL" ]] || return 0
-
   if file_has_marker "$HOMEBREW_GIT" "$MARK_BREW"; then
     rm -f "$HOMEBREW_GIT"
-    mv "$HOMEBREW_GIT_REAL" "$HOMEBREW_GIT"
-    echo "safeexec: restored Homebrew git ($HOMEBREW_GIT)"
-  else
-    echo "safeexec: WARNING: $HOMEBREW_GIT_REAL exists but $HOMEBREW_GIT is not safeexec shim; not restoring."
+    if [[ -e "$HOMEBREW_GIT_REAL" || -L "$HOMEBREW_GIT_REAL" ]]; then
+      mv "$HOMEBREW_GIT_REAL" "$HOMEBREW_GIT"
+      echo "safeexec: restored Homebrew git ($HOMEBREW_GIT)"
+      [[ -e "$HOMEBREW_GIT" ]] || echo "safeexec: WARNING: restored link is dangling; relink git with Homebrew."
+    else
+      echo "safeexec: WARNING: removed Homebrew git shim without a backup; relink git with Homebrew."
+    fi
+  elif [[ -e "$HOMEBREW_GIT_REAL" || -L "$HOMEBREW_GIT_REAL" ]]; then
+    echo "safeexec: WARNING: $HOMEBREW_GIT is not our shim; not restoring its backup."
   fi
 }
 
@@ -1039,10 +1132,11 @@ install_homebrew_pm_shims() {
 
     [[ -e "$shim" ]] || continue
 
-    if [[ -e "$real" ]] && file_has_marker "$shim" "$marker"; then
+    if file_has_marker "$shim" "$marker"; then
+      [[ -e "$real" ]] || echo "safeexec: WARNING: Homebrew $c backup unavailable; relink it with Homebrew."
       continue
     fi
-    if [[ -e "$real" ]]; then
+    if [[ -e "$real" || -L "$real" ]]; then
       echo "safeexec: WARNING: $real exists but $shim is not our shim; leaving it alone."
       continue
     fi
@@ -1087,14 +1181,17 @@ remove_homebrew_pm_shims() {
     real="$HOMEBREW_BIN/$c.safeexec.real"
     marker="$MARK_BREW_PM_PREFIX ($c)"
 
-    [[ -e "$real" ]] || continue
-
     if file_has_marker "$shim" "$marker"; then
       rm -f "$shim"
-      mv "$real" "$shim"
-      echo "safeexec: restored Homebrew $c ($shim)"
-    else
-      echo "safeexec: WARNING: $real exists but $shim is not safeexec shim; not restoring."
+      if [[ -e "$real" || -L "$real" ]]; then
+        mv "$real" "$shim"
+        echo "safeexec: restored Homebrew $c ($shim)"
+        [[ -e "$shim" ]] || echo "safeexec: WARNING: restored link is dangling; relink $c with Homebrew."
+      else
+        echo "safeexec: WARNING: removed Homebrew $c shim without a backup; relink it with Homebrew."
+      fi
+    elif [[ -e "$real" || -L "$real" ]]; then
+      echo "safeexec: WARNING: $shim is not our shim; not restoring $real."
     fi
   done
 }
@@ -1264,7 +1361,7 @@ cmd_install() {
 
   echo "safeexec: installed wrappers in $SAFEEXEC_DIR"
   echo "safeexec: shims in $LOCALBIN (rm/git/npm/yarn/pnpm/bun)"
-  if is_darwin && [[ -e "$HOMEBREW_GIT_REAL" ]] && file_has_marker "$HOMEBREW_GIT" "$MARK_BREW"; then
+  if is_darwin && [[ -e "$HOMEBREW_GIT_REAL" || -L "$HOMEBREW_GIT_REAL" ]] && file_has_marker "$HOMEBREW_GIT" "$MARK_BREW"; then
     echo "safeexec: Homebrew git shim active at $HOMEBREW_GIT"
   fi
   echo "safeexec: toggle with: safeexec -on | safeexec -off"
