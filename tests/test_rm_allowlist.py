@@ -166,6 +166,17 @@ exit $?
         self.set_allowlist(["tree:" + str(tree)])
         self.assertEqual(self.run_is_allowlisted(["-rf", str(target)]), 1)
 
+    def test_outside_directory_symlink_suffixes_remain_gated(self):
+        tree = Path(self.test_root) / "trusted"
+        child = tree / "child"
+        child.mkdir(parents=True)
+        outside = Path(self.test_root) / "outside-link"
+        outside.symlink_to(child, target_is_directory=True)
+        self.set_allowlist(["tree:" + str(tree)])
+        for suffix in ("", "/", "//", "/.", "///./"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.run_is_allowlisted(["-rf", str(outside) + suffix]), 1)
+
     def test_outside_symlink_into_tree_is_not_allowlisted(self):
         tree = Path(self.test_root) / "trusted"
         tree.mkdir()

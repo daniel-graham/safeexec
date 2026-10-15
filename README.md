@@ -32,11 +32,11 @@ If you're running an AI agent that can execute commands (including background ta
   - Do not run `safeexec -off` / `safeexec off`
   - Do not call `*.safeexec.real`
   - Do not call absolute-path binaries to evade wrappers (for example: `/bin/rm`, `/usr/bin/rm`, `/usr/bin/git`)
+  - Do not change `SAFEEXEC_RM_ALLOWLIST`, `SAFEEXEC_GIT_ALLOWLIST`, `XDG_CONFIG_HOME`, `HOME`, or `SUDO_USER` to evade gates.
   - If you believe a bypass is required, ask first and explain why.
 - For destructive ops, do not execute without explicit approval for the exact command:
   - `rm` with both recursive + force flags (any ordering): `rm -rf`, `rm -fr`, `rm --recursive --force`
   - `git reset`, `git revert`
-  - `git stash drop|clear|pop`
   - `git stash drop|clear|pop`
   - `npm/yarn/pnpm/bun audit fix --force` (or `audit --fix --force`)
 - Do not run destructive ops from background jobs, other panes, or detached tmux sessions.
@@ -249,6 +249,11 @@ directory. Bare repositories and failed context lookups remain gated.
 Install the updated wrapper to activate this behavior. Package-manager gates
 retain their existing behavior.
 
+Git 2.31 or newer is needed for repository-path queries. Older Git versions
+fail closed to confirmation. Git aliases are not expanded by this wrapper;
+the gates inspect direct command names. Foreground-process checks currently
+use Linux `/proc`; macOS relies on the terminal confirmation without that check.
+
 ---
 
 ## How it works
@@ -275,6 +280,14 @@ retain their existing behavior.
    - `/etc/sudoers.d/safeexec`
 
 ### macOS Homebrew shims
+
+After a Homebrew upgrade removes an old Cellar version, a `.safeexec.real`
+backup may become a dangling symlink. SafeExec preserves that backup, refuses
+to use its own shim as a real backend, and uses another unwrapped binary if
+available. Otherwise it reports an error instead of recursing. Reinstalling
+does not replace a missing backup with the shim itself. Uninstall restores
+existing backup links, including dangling ones; use Homebrew to relink or
+reinstall the affected command if its old target no longer exists.
 
 Because Homebrew’s PATH often wins, SafeExec also installs:
 

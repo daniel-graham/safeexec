@@ -30,6 +30,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+from io import BytesIO
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,7 +82,9 @@ def find_real_git() -> str:
     """Locate a real git binary, never a safeexec shim wrapping git."""
     override = os.environ.get("SAFEEXEC_TEST_REAL_GIT")
     candidates = [override] if override else []
-    candidates += ["/usr/bin/git", "/bin/git", shutil.which("git")]
+    candidates += ["/usr/bin/git.safeexec.real", "/bin/git.safeexec.real",
+                   "/opt/homebrew/bin/git.safeexec.real", "/usr/local/bin/git.safeexec.real",
+                   "/usr/bin/git", "/bin/git", shutil.which("git")]
     for candidate in candidates:
         if not candidate or not os.access(candidate, os.X_OK):
             continue
@@ -89,7 +93,7 @@ def find_real_git() -> str:
                 blob = handle.read(4096)
         except OSError:
             continue
-        if b"safeexec" in blob:
+        if b"safeexec" in blob.lower():
             continue
         return candidate
     raise RuntimeError("No real git binary found (safeexec shims rejected)")
@@ -211,6 +215,21 @@ class GitAllowlistTestCase(unittest.TestCase):
 
     # ------------------------------------------------------- trusted repo bypass
 
+    def test_real_git_finder_supports_diverted_and_homebrew_backups(self):
+        for backup in ("/usr/bin/git.safeexec.real", "/bin/git.safeexec.real",
+                       "/opt/homebrew/bin/git.safeexec.real", "/usr/local/bin/git.safeexec.real"):
+            with self.subTest(backup=backup), mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch("os.access", side_effect=lambda p, mode: p == backup), \
+                    mock.patch("builtins.open", side_effect=lambda *args: BytesIO(b"real executable")):
+                self.assertEqual(find_real_git(), backup)
+
+    def test_real_git_finder_rejects_uppercase_safeexec_markers(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch("os.access", side_effect=lambda p, mode: p == "/usr/bin/git"), \
+                mock.patch("builtins.open", side_effect=lambda *args: BytesIO(b"#!/bin/sh\n# SAFEEXEC HARD WRAPPER\n")):
+            with self.assertRaises(RuntimeError):
+                find_real_git()
+
     def test_gated_subcommands_bypass_when_repo_in_trusted_tree(self):
         repo = self.make_repo("projects/trusted/repo")
         self.set_allowlist([f"tree:{self.root / 'projects/trusted'}"])
@@ -249,6 +268,29 @@ class GitAllowlistTestCase(unittest.TestCase):
         self.assert_bypassed(["stash", "pop"], argv, rc, err)
 
     # --------------------------------------------- global options and env overrides
+
+    def test_two_argument_global_options_do_not_hide_gated_commands(self):
+        trusted = self.make_repo("trusted/repo")
+        outside = self.make_repo("outside/repo")
+        self.set_allowlist([f"tree:{trusted.parent}"])
+        for option in (["--config-env", "core.pager=PATH"],
+                       ["--attr-source", "HEAD"]):
+            probe = subprocess.run([REAL_GIT_BIN, *option, "rev-parse", "--is-inside-work-tree"],
+                                   cwd=trusted, env={"PATH": "/usr/bin:/bin"},
+                                   capture_output=True, text=True, timeout=10)
+            for command in (["reset", "--hard"], ["revert", "HEAD"],
+                            ["stash", "drop"], ["stash", "clear"], ["stash", "pop"]):
+                args = [*option, *command]
+                with self.subTest(args=args):
+                    rc, argv, err = self.run_wrapper(args, cwd=outside)
+                    self.assert_blocked(rc, argv, err, args)
+                    rc, argv, err = self.run_wrapper(args, cwd=trusted)
+                    if probe.returncode == 0:
+                        self.assert_bypassed(args, argv, rc, err)
+                    else:
+                        # Older Git may lack --attr-source. Failed repository
+                        # queries must stay gated even in a trusted directory.
+                        self.assert_blocked(rc, argv, err, args)
 
     def test_global_options_c_and_c_flags(self):
         repo = self.make_repo("projects/trusted/repo")
@@ -403,6 +445,14 @@ class GitAllowlistTestCase(unittest.TestCase):
         # Direct cwd in the sibling tree is refused as well.
         rc, argv, err = self.run_wrapper(["reset", "--hard"], cwd=sibling)
         self.assert_blocked(rc, argv, err, ["reset", "--hard"])
+
+    def test_information_only_global_options_pass_through(self):
+        repo = self.make_repo("untrusted/repo")
+        for flag in ("--exec-path", "--html-path", "--man-path", "--info-path"):
+            args = [flag, "reset", "--hard"]
+            with self.subTest(flag=flag):
+                rc, argv, err = self.run_wrapper(args, cwd=repo)
+                self.assert_bypassed(args, argv, rc, err)
 
     # ----------------------------------------------------------- argv / harmlessness
 
